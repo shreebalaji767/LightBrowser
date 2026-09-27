@@ -8,8 +8,6 @@
 #include <commctrl.h>
 
 #include <wrl.h>
-#include <wil/com.h>
-
 #include <WebView2.h>
 
 #include <string>
