@@ -903,7 +903,6 @@ static void CreateTabWebView(
                     FALSE
                 );
 
-                controller->put_IsZoomControlEnabled(
                     TRUE
                 );
 
