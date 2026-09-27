@@ -54,6 +54,39 @@ jobs:
             --config Release `
             --parallel
 
+      - name: Sign release binaries when certificate is configured
+        if: ${{ secrets.LIGHTBROWSER_PFX_BASE64 != '' && secrets.LIGHTBROWSER_PFX_PASSWORD != '' }}
+        shell: powershell
+        env:
+          PFX_BASE64: ${{ secrets.LIGHTBROWSER_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.LIGHTBROWSER_PFX_PASSWORD }}
+        run: |
+          $pfx = "$env:RUNNER_TEMP\LightBrowser-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+            Where-Object { $_.FullName -match "\\x64\\signtool.exe$" } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "SignTool not found." }
+          & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:PFX_PASSWORD /tr "http://timestamp.digicert.com" /td SHA256 "build\Release\LightBrowser.exe"
+          if ($LASTEXITCODE -ne 0) { throw "EXE signing failed." }
+          if (Test-Path "build\Release\WebView2Loader.dll") {
+            & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:PFX_PASSWORD /tr "http://timestamp.digicert.com" /td SHA256 "build\Release\WebView2Loader.dll"
+            if ($LASTEXITCODE -ne 0) { throw "DLL signing failed." }
+          }
+          Remove-Item $pfx -Force
+
+      - name: Verify binary
+        shell: powershell
+        run: |
+          if (-not (Test-Path "build\Release\LightBrowser.exe")) { throw "LightBrowser.exe missing." }
+          if ("${{ secrets.LIGHTBROWSER_PFX_BASE64 }}" -ne "") {
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+              Where-Object { $_.FullName -match "\\x64\\signtool.exe$" } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            & $signtool.FullName verify /pa /all "build\Release\LightBrowser.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode signature verification failed." }
+          }
+
       - name: Prepare package
         shell: powershell
         run: |
