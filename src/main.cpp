@@ -1,6 +1,3 @@
-#define UNICODE
-#define _UNICODE
-
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
@@ -837,98 +834,6 @@ static void ConfigureWebView(
             )
             {
                 HandleNewWindowRequest(args);
-
-                return S_OK;
-            }
-        ).Get(),
-        nullptr
-    );
-
-    tab->webview->add_DownloadStarting(
-        Callback<ICoreWebView2DownloadStartingEventHandler>(
-            [](
-                ICoreWebView2*,
-                ICoreWebView2DownloadStartingEventArgs* args
-            )
-            {
-                ComPtr<ICoreWebView2DownloadOperation>
-                    download;
-
-                if (
-                    FAILED(
-                        args->get_DownloadOperation(
-                            &download
-                        )
-                    )
-                )
-                {
-                    return S_OK;
-                }
-
-                LPWSTR suggested = nullptr;
-
-                if (
-                    SUCCEEDED(
-                        download->get_ResultFilePath(
-                            &suggested
-                        )
-                    )
-                )
-                {
-                    if (suggested)
-                        CoTaskMemFree(suggested);
-                }
-
-                LPWSTR uri = nullptr;
-
-                download->get_Uri(&uri);
-
-                std::wstring filename;
-
-                if (uri)
-                {
-                    filename =
-                        GetFileNameFromUrl(uri);
-
-                    CoTaskMemFree(uri);
-                }
-
-                if (filename.empty())
-                    filename = L"download";
-
-                filename =
-                    SanitizeFileName(filename);
-
-                fs::path destination =
-                    fs::path(DownloadsPath()) /
-                    filename;
-
-                int counter = 1;
-
-                while (fs::exists(destination))
-                {
-                    std::wstring stem =
-                        destination.stem().wstring();
-
-                    std::wstring ext =
-                        destination.extension().wstring();
-
-                    destination =
-                        fs::path(DownloadsPath()) /
-                        (
-                            stem +
-                            L" (" +
-                            std::to_wstring(counter++) +
-                            L")" +
-                            ext
-                        );
-                }
-
-                download->put_ResultFilePath(
-                    destination.wstring().c_str()
-                );
-
-                args->put_Handled(FALSE);
 
                 return S_OK;
             }
