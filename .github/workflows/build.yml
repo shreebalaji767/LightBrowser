@@ -1,0 +1,101 @@
+name: Build LightBrowser
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install NuGet
+        shell: powershell
+        run: |
+          $nuget = "$env:RUNNER_TEMP\nuget.exe"
+          Invoke-WebRequest `
+            -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" `
+            -OutFile $nuget
+          echo "NUGET=$nuget" >> $env:GITHUB_ENV
+
+      - name: Download WebView2 SDK
+        shell: powershell
+        run: |
+          & "$env:NUGET" install Microsoft.Web.WebView2 `
+            -Version 1.0.4191.47 `
+            -OutputDirectory "$env:GITHUB_WORKSPACE\deps" `
+            -NonInteractive
+
+      - name: Configure CMake
+        shell: powershell
+        run: |
+          $webview = "$env:GITHUB_WORKSPACE\deps\Microsoft.Web.WebView2.1.0.4191.47"
+
+          cmake `
+            -S . `
+            -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            "-DWEBVIEW2_DIR=$webview"
+
+      - name: Build
+        shell: powershell
+        run: |
+          cmake `
+            --build build `
+            --config Release `
+            --parallel
+
+      - name: Prepare package
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+
+          Copy-Item `
+            "build\Release\LightBrowser.exe" `
+            "package\LightBrowser.exe"
+
+          if (Test-Path "build\Release\WebView2Loader.dll") {
+            Copy-Item `
+              "build\Release\WebView2Loader.dll" `
+              "package\WebView2Loader.dll"
+          }
+
+          @"
+          LightBrowser
+          ============
+
+          Windows x64 native browser.
+
+          Requirements:
+          - Windows 10/11
+          - Microsoft Edge WebView2 Runtime
+
+          Run:
+          LightBrowser.exe
+          "@ | Out-File `
+            -FilePath "package\README.txt" `
+            -Encoding utf8
+
+      - name: Create ZIP
+        shell: powershell
+        run: |
+          Compress-Archive `
+            -Path "package\*" `
+            -DestinationPath "LightBrowser-Windows-x64.zip" `
+            -Force
+
+      - name: Upload browser
+        uses: actions/upload-artifact@v4
+        with:
+          name: LightBrowser-Windows-x64
+          path: LightBrowser-Windows-x64.zip
+          if-no-files-found: error
