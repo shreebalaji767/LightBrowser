@@ -899,12 +899,7 @@ static void CreateTabWebView(
                 if (FAILED(hr))
                     return hr;
 
-                controller->put_IsVisible(
-                    FALSE
-                );
-
-                    TRUE
-                );
+                controller->put_IsVisible(FALSE);
 
                 controller->put_ZoomFactor(
                     1.0
