@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -21,90 +22,38 @@ jobs:
         shell: powershell
         run: |
           $nuget = "$env:RUNNER_TEMP\nuget.exe"
-          Invoke-WebRequest `
-            -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" `
-            -OutFile $nuget
+          Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe" -OutFile $nuget
           echo "NUGET=$nuget" >> $env:GITHUB_ENV
 
-      - name: Download WebView2 SDK
+      - name: Download pinned WebView2 SDK
         shell: powershell
         run: |
-          & "$env:NUGET" install Microsoft.Web.WebView2 `
-            -Version 1.0.4191.47 `
-            -OutputDirectory "$env:GITHUB_WORKSPACE\deps" `
-            -NonInteractive
+          & "$env:NUGET" install Microsoft.Web.WebView2 -Version 1.0.4191.47 -OutputDirectory "$env:GITHUB_WORKSPACE\deps" -NonInteractive
 
       - name: Configure CMake
         shell: powershell
         run: |
           $webview = "$env:GITHUB_WORKSPACE\deps\Microsoft.Web.WebView2.1.0.4191.47"
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 "-DWEBVIEW2_DIR=$webview"
 
-          cmake `
-            -S . `
-            -B build `
-            -G "Visual Studio 17 2022" `
-            -A x64 `
-            "-DWEBVIEW2_DIR=$webview"
-
-      - name: Build
+      - name: Build Release
         shell: powershell
         run: |
-          cmake `
-            --build build `
-            --config Release `
-            --parallel
-
-      - name: Sign release binaries when certificate is configured
-        if: env.SIGNING_CONFIGURED == 'true'
-        shell: powershell
-        env:
-          SIGNING_CONFIGURED: ${{ secrets.LIGHTBROWSER_PFX_BASE64 != '' && secrets.LIGHTBROWSER_PFX_PASSWORD != '' }}
-          PFX_BASE64: ${{ secrets.LIGHTBROWSER_PFX_BASE64 }}
-          PFX_PASSWORD: ${{ secrets.LIGHTBROWSER_PFX_PASSWORD }}
-        run: |
-          $pfx = "$env:RUNNER_TEMP\LightBrowser-signing.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
-          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
-            Where-Object { $_.FullName -match "\\x64\\signtool.exe$" } |
-            Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $signtool) { throw "SignTool not found." }
-          & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:PFX_PASSWORD /tr "http://timestamp.digicert.com" /td SHA256 "build\Release\LightBrowser.exe"
-          if ($LASTEXITCODE -ne 0) { throw "EXE signing failed." }
-          if (Test-Path "build\Release\WebView2Loader.dll") {
-            & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:PFX_PASSWORD /tr "http://timestamp.digicert.com" /td SHA256 "build\Release\WebView2Loader.dll"
-            if ($LASTEXITCODE -ne 0) { throw "DLL signing failed." }
-          }
-          Remove-Item $pfx -Force
+          cmake --build build --config Release --parallel
 
       - name: Verify binary
         shell: powershell
-        env:
-          SIGNING_CONFIGURED: ${{ secrets.LIGHTBROWSER_PFX_BASE64 != '' && secrets.LIGHTBROWSER_PFX_PASSWORD != '' }}
         run: |
-          if (-not (Test-Path "build\Release\LightBrowser.exe")) { throw "LightBrowser.exe missing." }
-          if ($env:SIGNING_CONFIGURED -eq "true") {
-            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
-              Where-Object { $_.FullName -match "\\x64\\signtool.exe$" } |
-              Sort-Object FullName -Descending | Select-Object -First 1
-            & $signtool.FullName verify /pa /all "build\Release\LightBrowser.exe"
-            if ($LASTEXITCODE -ne 0) { throw "Authenticode signature verification failed." }
-          }
+          if (-not (Test-Path "build\Release\LightBrowser.exe")) { throw "LightBrowser.exe was not produced." }
+          if (-not (Test-Path "build\Release\WebView2Loader.dll")) { throw "WebView2Loader.dll was not produced." }
 
       - name: Prepare package
         shell: powershell
         run: |
+          Remove-Item package -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path package | Out-Null
-
-          Copy-Item `
-            "build\Release\LightBrowser.exe" `
-            "package\LightBrowser.exe"
-
-          if (Test-Path "build\Release\WebView2Loader.dll") {
-            Copy-Item `
-              "build\Release\WebView2Loader.dll" `
-              "package\WebView2Loader.dll"
-          }
-
+          Copy-Item "build\Release\LightBrowser.exe" "package\LightBrowser.exe"
+          Copy-Item "build\Release\WebView2Loader.dll" "package\WebView2Loader.dll"
           @"
           LightBrowser
           ============
@@ -117,21 +66,57 @@ jobs:
 
           Run:
           LightBrowser.exe
-          "@ | Out-File `
-            -FilePath "package\README.txt" `
-            -Encoding utf8
+          "@ | Out-File -FilePath "package\README.txt" -Encoding utf8
 
-      - name: Create ZIP
+      - name: Generate SHA-256 checksums
         shell: powershell
         run: |
-          Compress-Archive `
-            -Path "package\*" `
-            -DestinationPath "LightBrowser-Windows-x64.zip" `
-            -Force
+          Get-FileHash "package\LightBrowser.exe" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  LightBrowser.exe" } |
+            Out-File "package\SHA256SUMS.txt" -Encoding ascii
+          Get-FileHash "package\WebView2Loader.dll" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  WebView2Loader.dll" } |
+            Add-Content "package\SHA256SUMS.txt" -Encoding ascii
 
-      - name: Upload browser
+      - name: Create unsigned ZIP
+        shell: powershell
+        run: |
+          Compress-Archive -Path "package\*" -DestinationPath "LightBrowser-Windows-x64-unsigned.zip" -Force
+
+      - name: Upload unsigned release package
+        id: upload-unsigned
         uses: actions/upload-artifact@v4
         with:
-          name: LightBrowser-Windows-x64
-          path: LightBrowser-Windows-x64.zip
+          name: LightBrowser-Windows-x64-unsigned
+          path: LightBrowser-Windows-x64-unsigned.zip
           if-no-files-found: error
+
+      - name: Submit to SignPath when configured
+        if: env.SIGNPATH_CONFIGURED == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: LightBrowser
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Publish signed package
+        if: env.SIGNPATH_CONFIGURED == 'true'
+        shell: powershell
+        run: |
+          if (-not (Test-Path "signed")) { throw "SignPath did not return a signed artifact." }
+          Compress-Archive -Path "signed\*" -DestinationPath "LightBrowser-Windows-x64-SIGNED.zip" -Force
+
+      - name: Upload signed release package
+        if: env.SIGNPATH_CONFIGURED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LightBrowser-Windows-x64-SIGNED
+          path: LightBrowser-Windows-x64-SIGNED.zip
+          if-no-files-found: error
+
+    env:
+      SIGNPATH_CONFIGURED: ${{ secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORGANIZATION_ID != '' }}
