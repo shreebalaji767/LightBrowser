@@ -37,6 +37,7 @@ static HWND g_homeButton = nullptr;
 static HWND g_newTabButton = nullptr;
 static HWND g_bookmarkButton = nullptr;
 static HWND g_historyButton = nullptr;
+static HWND g_downloadButton = nullptr;
 static HWND g_bookmarksPanel = nullptr;
 static HWND g_historyPanel = nullptr;
 static HWND g_tabsBar = nullptr;
@@ -137,39 +138,31 @@ static std::wstring SanitizeFileName(std::wstring name)
 
 static std::wstring UrlEncode(const std::wstring& input)
 {
+    int bytesNeeded = WideCharToMultiByte(CP_UTF8, 0, input.c_str(),
+        static_cast<int>(input.size()), nullptr, 0, nullptr, nullptr);
+    if (bytesNeeded <= 0)
+        return L"";
+
+    std::string utf8(static_cast<size_t>(bytesNeeded), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, input.c_str(),
+        static_cast<int>(input.size()), utf8.data(), bytesNeeded, nullptr, nullptr);
+
     std::wstring output;
-
     const wchar_t hex[] = L"0123456789ABCDEF";
-
-    for (unsigned char c : std::string(
-        input.begin(),
-        input.end()
-    ))
+    for (unsigned char c : utf8)
     {
-        if (
-            (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') ||
-            c == '-' ||
-            c == '_' ||
-            c == '.' ||
-            c == '~'
-        )
-        {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
             output += static_cast<wchar_t>(c);
-        }
-        else if (c == L' ')
-        {
+        else if (c == ' ')
             output += L'+';
-        }
         else
         {
-            output += L'%';
+            output += L'%',
             output += hex[(c >> 4) & 0x0F];
             output += hex[c & 0x0F];
         }
     }
-
     return output;
 }
 
@@ -411,9 +404,40 @@ static void Reload()
 static void Stop()
 {
     Tab* tab = ActiveTab();
-
     if (tab && tab->webview)
         tab->webview->Stop();
+}
+
+static void SetZoom(double factor)
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->controller)
+        return;
+    factor = max(0.25, min(5.0, factor));
+    tab->controller->put_ZoomFactor(factor);
+}
+
+static void ZoomBy(double delta)
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->controller)
+        return;
+    double zoom = 1.0;
+    if (SUCCEEDED(tab->controller->get_ZoomFactor(&zoom)))
+        SetZoom(zoom + delta);
+}
+
+static void OpenDevTools()
+{
+    Tab* tab = ActiveTab();
+    if (tab && tab->webview)
+        tab->webview->OpenDevToolsWindow();
+}
+
+static void OpenDownloadsFolder()
+{
+    std::wstring path = DownloadsPath();
+    ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 static void SetAddressBarText(
@@ -1163,6 +1187,23 @@ static void CreateToolbar()
         34,
         g_toolbar,
         reinterpret_cast<HMENU>(7),
+        g_instance,
+        nullptr
+    );
+
+    g_downloadButton = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"↓",
+        WS_CHILD |
+        WS_VISIBLE |
+        BS_PUSHBUTTON,
+        801,
+        8,
+        42,
+        34,
+        g_toolbar,
+        reinterpret_cast<HMENU>(9),
         g_instance,
         nullptr
     );
