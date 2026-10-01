@@ -37,6 +37,7 @@ static HWND g_homeButton = nullptr;
 static HWND g_newTabButton = nullptr;
 static HWND g_bookmarkButton = nullptr;
 static HWND g_historyButton = nullptr;
+static HWND g_downloadButton = nullptr;
 static HWND g_bookmarksPanel = nullptr;
 static HWND g_historyPanel = nullptr;
 static HWND g_tabsBar = nullptr;
@@ -46,6 +47,9 @@ static HINSTANCE g_instance = nullptr;
 static ComPtr<ICoreWebView2Environment> g_environment;
 
 static std::wstring g_homePage = L"https://www.google.com/";
+static constexpr double DEFAULT_ZOOM = 1.0;
+static constexpr double MIN_ZOOM = 0.25;
+static constexpr double MAX_ZOOM = 5.0;
 
 static std::wstring AppDataPath()
 {
@@ -137,28 +141,31 @@ static std::wstring SanitizeFileName(std::wstring name)
 
 static std::wstring UrlEncode(const std::wstring& input)
 {
-    std::wstring output;
+    int bytesNeeded = WideCharToMultiByte(
+        CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()),
+        nullptr, 0, nullptr, nullptr);
 
+    if (bytesNeeded <= 0)
+        return L"";
+
+    std::string utf8(static_cast<size_t>(bytesNeeded), '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()),
+        utf8.data(), bytesNeeded, nullptr, nullptr);
+
+    std::wstring output;
     const wchar_t hex[] = L"0123456789ABCDEF";
 
-    for (unsigned char c : std::string(
-        input.begin(),
-        input.end()
-    ))
+    for (unsigned char c : utf8)
     {
-        if (
-            (c >= 'a' && c <= 'z') ||
+        if ((c >= 'a' && c <= 'z') ||
             (c >= 'A' && c <= 'Z') ||
             (c >= '0' && c <= '9') ||
-            c == '-' ||
-            c == '_' ||
-            c == '.' ||
-            c == '~'
-        )
+            c == '-' || c == '_' || c == '.' || c == '~')
         {
             output += static_cast<wchar_t>(c);
         }
-        else if (c == L' ')
+        else if (c == ' ')
         {
             output += L'+';
         }
@@ -416,6 +423,52 @@ static void Stop()
         tab->webview->Stop();
 }
 
+static void SetZoom(double factor)
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->controller)
+        return;
+
+    factor = max(MIN_ZOOM, min(MAX_ZOOM, factor));
+    tab->controller->put_ZoomFactor(factor);
+}
+
+static void ZoomBy(double delta)
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->controller)
+        return;
+
+    double zoom = DEFAULT_ZOOM;
+    if (SUCCEEDED(tab->controller->get_ZoomFactor(&zoom)))
+        SetZoom(zoom + delta);
+}
+
+static void OpenDevTools()
+{
+    Tab* tab = ActiveTab();
+    if (tab && tab->webview)
+        tab->webview->OpenDevToolsWindow();
+}
+
+static void FindOnPage()
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->webview)
+        return;
+
+    tab->webview->ExecuteScript(
+        L"window.find(window.prompt('Find text:'), false, false, true, false, false, false);",
+        nullptr,
+        nullptr);
+}
+
+static void OpenDownloadsFolder()
+{
+    std::wstring path = DownloadsPath();
+    ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 static void SetAddressBarText(
     const std::wstring& text
 )
@@ -611,774 +664,28 @@ static void UpdateTabButtons()
         if (!button)
             continue;
 
-        int width = 180;
+        const bool narrow = rc.right < 760;
+        const int left = 175;
+        const int rightButtons = narrow ? 94 : 169;
 
-        if (x + width > rect.right)
-            width = rect.right - x;
+        int width = rc.right - left - rightButtons;
+        if (width < 120)
+            width = 120;
 
-        if (width < 80)
-            width = 80;
+        SetWindowPos(g_addressBar, nullptr, left, 8, width, 34, SWP_NOZORDER);
 
-        SetWindowPos(
-            button,
-            nullptr,
-            x,
-            4,
-            width,
-            rect.bottom - 8,
-            SWP_NOZORDER
-        );
-
-        std::wstring caption =
-            g_tabs[i]->title;
-
-        if (caption.empty())
-            caption = L"New Tab";
-
-        SetWindowTextW(
-            button,
-            caption.c_str()
-        );
-
-        x += width + 4;
-    }
-}
-
-static void AddTabButton(
-    int index
-)
-{
-    if (
-        index < 0 ||
-        index >= static_cast<int>(g_tabs.size())
-    )
-    {
-        return;
-    }
-
-    HWND button = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"New Tab",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        0,
-        0,
-        180,
-        28,
-        g_tabsBar,
-        reinterpret_cast<HMENU>(
-            10000 + index
-        ),
-        g_instance,
-        nullptr
-    );
-
-    g_tabs[index]->button = button;
-
-    UpdateTabButtons();
-}
-
-static void OpenNewTab(
-    const std::wstring& url = L""
-);
-
-static void HandleNewWindowRequest(
-    ICoreWebView2NewWindowRequestedEventArgs* args
-)
-{
-    if (!args)
-        return;
-
-    LPWSTR requestedUri = nullptr;
-
-    args->get_Uri(
-        &requestedUri
-    );
-
-    std::wstring url;
-
-    if (requestedUri)
-    {
-        url = requestedUri;
-        CoTaskMemFree(requestedUri);
-    }
-
-    args->put_Handled(TRUE);
-
-    OpenNewTab(url);
-}
-
-static void ConfigureWebView(
-    Tab* tab
-)
-{
-    if (!tab || !tab->webview)
-        return;
-
-    tab->webview->add_NavigationStarting(
-        Callback<ICoreWebView2NavigationStartingEventHandler>(
-            [tab](
-                ICoreWebView2*,
-                ICoreWebView2NavigationStartingEventArgs* args
-            )
-            {
-                LPWSTR uri = nullptr;
-
-                if (
-                    SUCCEEDED(
-                        args->get_Uri(&uri)
-                    ) &&
-                    uri
-                )
-                {
-                    tab->url = uri;
-                    SetAddressBarText(tab->url);
-
-                    CoTaskMemFree(uri);
-                }
-
-                return S_OK;
-            }
-        ).Get(),
-        nullptr
-    );
-
-    tab->webview->add_NavigationCompleted(
-        Callback<ICoreWebView2NavigationCompletedEventHandler>(
-            [tab](
-                ICoreWebView2*,
-                ICoreWebView2NavigationCompletedEventArgs*
-            )
-            {
-                if (tab->url.empty())
-                    tab->url = g_homePage;
-
-                SaveHistory(tab->url);
-
-                UpdateNavigationState();
-
-                return S_OK;
-            }
-        ).Get(),
-        nullptr
-    );
-
-    tab->webview->add_SourceChanged(
-        Callback<ICoreWebView2SourceChangedEventHandler>(
-            [tab](
-                ICoreWebView2*,
-                ICoreWebView2SourceChangedEventArgs*
-            )
-            {
-                LPWSTR uri = nullptr;
-
-                if (
-                    SUCCEEDED(
-                        tab->webview->get_Source(&uri)
-                    ) &&
-                    uri
-                )
-                {
-                    tab->url = uri;
-
-                    SetAddressBarText(
-                        tab->url
-                    );
-
-                    CoTaskMemFree(uri);
-                }
-
-                UpdateNavigationState();
-
-                return S_OK;
-            }
-        ).Get(),
-        nullptr
-    );
-
-    tab->webview->add_DocumentTitleChanged(
-        Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
-            [tab](
-                ICoreWebView2*,
-                IUnknown*
-            )
-            {
-                LPWSTR title = nullptr;
-
-                if (
-                    SUCCEEDED(
-                        tab->webview->get_DocumentTitle(
-                            &title
-                        )
-                    ) &&
-                    title
-                )
-                {
-                    tab->title = title;
-
-                    CoTaskMemFree(title);
-                }
-
-                UpdateTabButtons();
-
-                return S_OK;
-            }
-        ).Get(),
-        nullptr
-    );
-
-    tab->webview->add_NewWindowRequested(
-        Callback<ICoreWebView2NewWindowRequestedEventHandler>(
-            [](
-                ICoreWebView2*,
-                ICoreWebView2NewWindowRequestedEventArgs* args
-            )
-            {
-                HandleNewWindowRequest(args);
-
-                return S_OK;
-            }
-        ).Get(),
-        nullptr
-    );
-
-    tab->webview->add_PermissionRequested(
-        Callback<ICoreWebView2PermissionRequestedEventHandler>(
-            [](
-                ICoreWebView2*,
-                ICoreWebView2PermissionRequestedEventArgs* args
-            )
-            {
-                COREWEBVIEW2_PERMISSION_KIND kind;
-
-                args->get_PermissionKind(
-                    &kind
-                );
-
-                switch (kind)
-                {
-                case COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ:
-                case COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:
-                    break;
-
-                default:
-                    break;
-                }
-
-                return S_OK;
-            }
-        ).Get(),
-        nullptr
-    );
-}
-
-static void CreateTabWebView(
-    Tab* tab
-)
-{
-    if (!g_environment || !tab)
-        return;
-
-    g_environment->CreateCoreWebView2Controller(
-        g_mainWindow,
-        Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-            [tab](
-                HRESULT result,
-                ICoreWebView2Controller* controller
-            )
-            {
-                if (FAILED(result) || !controller)
-                    return result;
-
-                tab->controller = controller;
-
-                HRESULT hr =
-                    controller->get_CoreWebView2(
-                        &tab->webview
-                    );
-
-                if (FAILED(hr))
-                    return hr;
-
-                controller->put_IsVisible(FALSE);
-
-                controller->put_ZoomFactor(
-                    1.0
-                );
-
-                ConfigureWebView(tab);
-
-                ResizeTab();
-
-                std::wstring url = tab->url;
-
-                if (url.empty())
-                    url = g_homePage;
-
-                tab->url = url;
-
-                tab->webview->Navigate(
-                    url.c_str()
-                );
-
-                int index = -1;
-
-                for (
-                    size_t i = 0;
-                    i < g_tabs.size();
-                    ++i
-                )
-                {
-                    if (g_tabs[i].get() == tab)
-                    {
-                        index =
-                            static_cast<int>(i);
-                        break;
-                    }
-                }
-
-                if (index >= 0)
-                    ActivateTab(index);
-
-                return S_OK;
-            }
-        ).Get()
-    );
-}
-
-static void OpenNewTab(
-    const std::wstring& url
-)
-{
-    auto tab =
-        std::make_unique<Tab>();
-
-    tab->url =
-        url.empty()
-            ? g_homePage
-            : url;
-
-    tab->title =
-        L"New Tab";
-
-    g_tabs.push_back(
-        std::move(tab)
-    );
-
-    int index =
-        static_cast<int>(g_tabs.size()) - 1;
-
-    AddTabButton(index);
-
-    ActivateTab(index);
-
-    CreateTabWebView(
-        g_tabs[index].get()
-    );
-}
-
-static void CloseActiveTab()
-{
-    if (g_activeTab >= 0)
-        CloseTab(g_activeTab);
-}
-
-static void ShowBookmarks()
-{
-    if (!g_bookmarksPanel)
-        return;
-
-    bool visible =
-        IsWindowVisible(
-            g_bookmarksPanel
-        ) != FALSE;
-
-    ShowWindow(
-        g_bookmarksPanel,
-        visible
-            ? SW_HIDE
-            : SW_SHOW
-    );
-
-    if (!visible)
-    {
-        SetWindowTextW(
-            g_bookmarksPanel,
-            L"BOOKMARKS"
-        );
-    }
-}
-
-static void ShowHistory()
-{
-    if (!g_historyPanel)
-        return;
-
-    bool visible =
-        IsWindowVisible(
-            g_historyPanel
-        ) != FALSE;
-
-    ShowWindow(
-        g_historyPanel,
-        visible
-            ? SW_HIDE
-            : SW_SHOW
-    );
-
-    if (!visible)
-    {
-        SetWindowTextW(
-            g_historyPanel,
-            L"HISTORY"
-        );
-    }
-}
-
-static void CreateToolbar()
-{
-    g_toolbar = CreateWindowExW(
-        0,
-        L"STATIC",
-        nullptr,
-        WS_CHILD |
-        WS_VISIBLE,
-        0,
-        0,
-        100,
-        55,
-        g_mainWindow,
-        nullptr,
-        g_instance,
-        nullptr
-    );
-
-    g_backButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"←",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        5,
-        8,
-        38,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(1),
-        g_instance,
-        nullptr
-    );
-
-    g_forwardButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"→",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        47,
-        8,
-        38,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(2),
-        g_instance,
-        nullptr
-    );
-
-    g_reloadButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"↻",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        89,
-        8,
-        38,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(3),
-        g_instance,
-        nullptr
-    );
-
-    g_homeButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"⌂",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        131,
-        8,
-        38,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(4),
-        g_instance,
-        nullptr
-    );
-
-    g_addressBar = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        L"",
-        WS_CHILD |
-        WS_VISIBLE |
-        ES_AUTOHSCROLL,
-        175,
-        8,
-        500,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(5),
-        g_instance,
-        nullptr
-    );
-
-    g_bookmarkButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"☆",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        680,
-        8,
-        42,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(6),
-        g_instance,
-        nullptr
-    );
-
-    g_historyButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"History",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        726,
-        8,
-        70,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(7),
-        g_instance,
-        nullptr
-    );
-
-    g_newTabButton = CreateWindowExW(
-        0,
-        L"BUTTON",
-        L"+",
-        WS_CHILD |
-        WS_VISIBLE |
-        BS_PUSHBUTTON,
-        800,
-        8,
-        42,
-        34,
-        g_toolbar,
-        reinterpret_cast<HMENU>(8),
-        g_instance,
-        nullptr
-    );
-}
-
-static void CreatePanels()
-{
-    g_bookmarksPanel = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        L"BOOKMARKS",
-        WS_CHILD |
-        ES_MULTILINE |
-        ES_READONLY |
-        WS_VSCROLL,
-        0,
-        0,
-        260,
-        300,
-        g_mainWindow,
-        nullptr,
-        g_instance,
-        nullptr
-    );
-
-    g_historyPanel = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        L"EDIT",
-        L"HISTORY",
-        WS_CHILD |
-        ES_MULTILINE |
-        ES_READONLY |
-        WS_VSCROLL,
-        0,
-        0,
-        260,
-        300,
-        g_mainWindow,
-        nullptr,
-        g_instance,
-        nullptr
-    );
-}
-
-static void UpdatePanelContents()
-{
-    if (g_bookmarksPanel)
-    {
-        auto bookmarks =
-            LoadLines(
-                BookmarkFile()
-            );
-
-        std::wstring text;
-
-        for (const auto& item : bookmarks)
-        {
-            text += item;
-            text += L"\r\n";
-        }
-
-        SetWindowTextW(
-            g_bookmarksPanel,
-            text.c_str()
-        );
-    }
-
-    if (g_historyPanel)
-    {
-        auto history =
-            LoadLines(
-                HistoryFile()
-            );
-
-        std::wstring text;
-
-        int start =
-            history.size() > 100
-                ? static_cast<int>(
-                    history.size() - 100
-                  )
-                : 0;
-
-        for (
-            int i = start;
-            i < static_cast<int>(history.size());
-            ++i
-        )
-        {
-            text += history[i];
-            text += L"\r\n";
-        }
-
-        SetWindowTextW(
-            g_historyPanel,
-            text.c_str()
-        );
-    }
-}
-
-static void UpdateLayout()
-{
-    if (!g_mainWindow)
-        return;
-
-    RECT rc{};
-
-    GetClientRect(
-        g_mainWindow,
-        &rc
-    );
-
-    const int tabsHeight = 34;
-    const int toolbarHeight = 55;
-
-    if (g_tabsBar)
-    {
-        SetWindowPos(
-            g_tabsBar,
-            nullptr,
-            0,
-            0,
-            rc.right,
-            tabsHeight,
-            SWP_NOZORDER
-        );
-    }
-
-    if (g_toolbar)
-    {
-        SetWindowPos(
-            g_toolbar,
-            nullptr,
-            0,
-            tabsHeight,
-            rc.right,
-            toolbarHeight,
-            SWP_NOZORDER
-        );
-
-        int width =
-            rc.right - 175 - 170;
-
-        if (width < 150)
-            width = 150;
-
-        SetWindowPos(
-            g_addressBar,
-            nullptr,
-            175,
-            8,
-            width,
-            34,
-            SWP_NOZORDER
-        );
-
-        int x =
-            175 + width + 5;
-
-        SetWindowPos(
-            g_bookmarkButton,
-            nullptr,
-            x,
-            8,
-            42,
-            34,
-            SWP_NOZORDER
-        );
-
+        int x = left + width + 5;
+        SetWindowPos(g_bookmarkButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);
         x += 47;
 
-        SetWindowPos(
-            g_historyButton,
-            nullptr,
-            x,
-            8,
-            70,
-            34,
-            SWP_NOZORDER
-        );
+        SetWindowPos(g_historyButton, nullptr, x, 8, narrow ? 42 : 70, 34, SWP_NOZORDER);
+        SetWindowTextW(g_historyButton, narrow ? L"H" : L"History");
+        x += narrow ? 47 : 75;
 
-        x += 75;
+        SetWindowPos(g_downloadButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);
+        x += 47;
 
-        SetWindowPos(
-            g_newTabButton,
-            nullptr,
-            x,
-            8,
-            42,
-            34,
-            SWP_NOZORDER
-        );
+        SetWindowPos(g_newTabButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);
     }
 
     if (g_bookmarksPanel)
@@ -1511,6 +818,10 @@ static void ExecuteCommand(
         OpenNewTab();
         break;
 
+    case 9:
+        OpenDownloadsFolder();
+        break;
+
     default:
         break;
     }
@@ -1572,7 +883,7 @@ static LRESULT CALLBACK WindowProc(
 
         if (
             id >= 1 &&
-            id <= 8 &&
+            id <= 9 &&
             notification == BN_CLICKED
         )
         {
@@ -1671,11 +982,32 @@ static LRESULT CALLBACK WindowProc(
                 return 0;
 
             case 'F':
+                FindOnPage();
+                return 0;
+
+            case '0':
+                SetZoom(DEFAULT_ZOOM);
+                return 0;
+
+            case VK_OEM_PLUS:
+            case VK_ADD:
+                ZoomBy(0.10);
+                return 0;
+
+            case VK_OEM_MINUS:
+            case VK_SUBTRACT:
+                ZoomBy(-0.10);
                 return 0;
 
             default:
                 break;
             }
+        }
+
+        if (wParam == VK_F12)
+        {
+            OpenDevTools();
+            return 0;
         }
 
         if (wParam == VK_F5)
