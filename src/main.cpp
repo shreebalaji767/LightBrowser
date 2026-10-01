@@ -37,6 +37,7 @@ static HWND g_homeButton = nullptr;
 static HWND g_newTabButton = nullptr;
 static HWND g_bookmarkButton = nullptr;
 static HWND g_historyButton = nullptr;
+static HWND g_downloadButton = nullptr;
 static HWND g_bookmarksPanel = nullptr;
 static HWND g_historyPanel = nullptr;
 static HWND g_tabsBar = nullptr;
@@ -76,6 +77,42 @@ static std::wstring HistoryFile()
 static std::wstring BookmarkFile()
 {
     return AppDataPath() + L"\\bookmarks.txt";
+}
+
+static std::wstring SessionFile()
+{
+    return AppDataPath() + L"\\session.txt";
+}
+
+static void SaveSession()
+{
+    std::wofstream out(SessionFile(), std::ios::trunc);
+    if (!out)
+        return;
+
+    for (const auto& tab : g_tabs)
+    {
+        if (tab && !tab->url.empty())
+            out << tab->url << L"\n";
+    }
+}
+
+static std::vector<std::wstring> LoadSession()
+{
+    std::vector<std::wstring> urls;
+    std::wifstream in(SessionFile());
+    if (!in)
+        return urls;
+
+    std::wstring line;
+    while (std::getline(in, line))
+    {
+        if (!line.empty())
+            urls.push_back(line);
+        if (urls.size() >= 12)
+            break;
+    }
+    return urls;
 }
 
 static std::wstring DownloadsPath()
@@ -137,31 +174,24 @@ static std::wstring SanitizeFileName(std::wstring name)
 
 static std::wstring UrlEncode(const std::wstring& input)
 {
+    int bytesNeeded = WideCharToMultiByte(CP_UTF8, 0, input.c_str(),
+        static_cast<int>(input.size()), nullptr, 0, nullptr, nullptr);
+    if (bytesNeeded <= 0)
+        return L"";
+
+    std::string utf8(static_cast<size_t>(bytesNeeded), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, input.c_str(),
+        static_cast<int>(input.size()), utf8.data(), bytesNeeded, nullptr, nullptr);
+
     std::wstring output;
-
     const wchar_t hex[] = L"0123456789ABCDEF";
-
-    for (unsigned char c : std::string(
-        input.begin(),
-        input.end()
-    ))
+    for (unsigned char c : utf8)
     {
-        if (
-            (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') ||
-            c == '-' ||
-            c == '_' ||
-            c == '.' ||
-            c == '~'
-        )
-        {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
             output += static_cast<wchar_t>(c);
-        }
-        else if (c == L' ')
-        {
+        else if (c == ' ')
             output += L'+';
-        }
         else
         {
             output += L'%';
@@ -169,7 +199,6 @@ static std::wstring UrlEncode(const std::wstring& input)
             output += hex[c & 0x0F];
         }
     }
-
     return output;
 }
 
@@ -411,9 +440,107 @@ static void Reload()
 static void Stop()
 {
     Tab* tab = ActiveTab();
-
     if (tab && tab->webview)
         tab->webview->Stop();
+}
+
+static void SetZoom(double factor)
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->controller)
+        return;
+    factor = std::max(0.25, std::min(5.0, factor));
+    tab->controller->put_ZoomFactor(factor);
+}
+
+static void ZoomBy(double delta)
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->controller)
+        return;
+    double zoom = 1.0;
+    if (SUCCEEDED(tab->controller->get_ZoomFactor(&zoom)))
+        SetZoom(zoom + delta);
+}
+
+static void FindOnPage()
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->webview)
+        return;
+
+    tab->webview->ExecuteScript(
+        L"window.find(window.prompt('Find text:'), false, false, true, false, false, false);",
+        nullptr,
+        nullptr);
+}
+
+static void OpenDevTools()
+{
+    Tab* tab = ActiveTab();
+    if (tab && tab->webview)
+        tab->webview->OpenDevToolsWindow();
+}
+
+static void PrintActiveTabToPdf()
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->webview)
+        return;
+
+    ComPtr<ICoreWebView2_7> webview7;
+    if (FAILED(tab->webview.As(&webview7)) || !webview7)
+    {
+        MessageBoxW(
+            g_mainWindow,
+            L"PDF printing is not supported by the installed WebView2 runtime.",
+            APP_NAME,
+            MB_ICONINFORMATION);
+        return;
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+
+    std::wstring name =
+        L"LightBrowser_" +
+        std::to_wstring(now.wYear) + L"-" +
+        std::to_wstring(now.wMonth) + L"-" +
+        std::to_wstring(now.wDay) + L"_" +
+        std::to_wstring(now.wHour) + L"-" +
+        std::to_wstring(now.wMinute) + L"-" +
+        std::to_wstring(now.wSecond) + L".pdf";
+
+    fs::path output = fs::path(DownloadsPath()) / name;
+
+    webview7->PrintToPdf(
+        output.wstring().c_str(),
+        nullptr,
+        Callback<ICoreWebView2PrintToPdfCompletedHandler>(
+            [output](HRESULT errorCode, BOOL isSuccessful)
+            {
+                if (SUCCEEDED(errorCode) && isSuccessful)
+                {
+                    ShellExecuteW(
+                        nullptr, L"open", output.wstring().c_str(),
+                        nullptr, nullptr, SW_SHOWNORMAL);
+                }
+                else
+                {
+                    MessageBoxW(
+                        g_mainWindow,
+                        L"Could not create the PDF.",
+                        APP_NAME,
+                        MB_ICONERROR);
+                }
+                return S_OK;
+            }).Get());
+}
+
+static void OpenDownloadsFolder()
+{
+    std::wstring path = DownloadsPath();
+    ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 static void SetAddressBarText(
@@ -583,62 +710,60 @@ static void CloseTab(int index)
     if (g_activeTab < 0)
         g_activeTab = 0;
 
+    RebuildTabButtons();
     ActivateTab(g_activeTab);
 }
 
 static void UpdateTabButtons()
 {
-    if (!g_tabsBar)
+    if (!g_tabsBar || g_tabs.empty())
         return;
 
     RECT rect{};
+    GetClientRect(g_tabsBar, &rect);
 
-    GetClientRect(
-        g_tabsBar,
-        &rect
-    );
-
+    const int count = static_cast<int>(g_tabs.size());
+    const int gap = 4;
+    const int available = std::max(1, rect.right - 8 - gap * (count - 1));
+    const int width = std::max(92, std::min(190, available / count));
     int x = 4;
 
     for (size_t i = 0; i < g_tabs.size(); ++i)
     {
-        HWND button =
-            g_tabs[i]->button;
-
+        HWND button = g_tabs[i]->button;
         if (!button)
             continue;
 
-        int width = 180;
+        SetWindowPos(button, nullptr, x, 4, width, std::max(24, rect.bottom - 8), SWP_NOZORDER);
 
-        if (x + width > rect.right)
-            width = rect.right - x;
-
-        if (width < 80)
-            width = 80;
-
-        SetWindowPos(
-            button,
-            nullptr,
-            x,
-            4,
-            width,
-            rect.bottom - 8,
-            SWP_NOZORDER
-        );
-
-        std::wstring caption =
-            g_tabs[i]->title;
-
+        std::wstring caption = g_tabs[i]->title;
         if (caption.empty())
             caption = L"New Tab";
-
-        SetWindowTextW(
-            button,
-            caption.c_str()
-        );
-
-        x += width + 4;
+        SetWindowTextW(button, caption.c_str());
+        x += width + gap;
     }
+}
+
+static void AddTabButton(int index);
+
+static void RebuildTabButtons()
+{
+    if (!g_tabsBar)
+        return;
+
+    for (auto& tab : g_tabs)
+    {
+        if (tab->button)
+        {
+            DestroyWindow(tab->button);
+            tab->button = nullptr;
+        }
+    }
+
+    for (size_t i = 0; i < g_tabs.size(); ++i)
+        AddTabButton(static_cast<int>(i));
+
+    UpdateTabButtons();
 }
 
 static void AddTabButton(
@@ -840,6 +965,56 @@ static void ConfigureWebView(
         ).Get(),
         nullptr
     );
+
+    ComPtr<ICoreWebView2Settings> settings;
+    if (SUCCEEDED(tab->webview->get_Settings(&settings)) && settings)
+    {
+        settings->put_AreDevToolsEnabled(TRUE);
+        settings->put_AreDefaultContextMenusEnabled(TRUE);
+        settings->put_AreDefaultScriptDialogsEnabled(TRUE);
+        settings->put_IsStatusBarEnabled(FALSE);
+        settings->put_IsZoomControlEnabled(TRUE);
+    }
+
+    ComPtr<ICoreWebView2_4> webview4;
+    if (SUCCEEDED(tab->webview.As(&webview4)) && webview4)
+    {
+        webview4->add_DownloadStarting(
+            Callback<ICoreWebView2DownloadStartingEventHandler>(
+                [](ICoreWebView2*, ICoreWebView2DownloadStartingEventArgs* args)
+                {
+                    if (!args)
+                        return S_OK;
+
+                    LPWSTR uri = nullptr;
+                    std::wstring fileName = L"download";
+                    ComPtr<ICoreWebView2DownloadOperation> operation;
+                    if (SUCCEEDED(args->get_DownloadOperation(&operation)) && operation &&
+                        SUCCEEDED(operation->get_Uri(&uri)) && uri)
+                    {
+                        fileName = GetFileNameFromUrl(uri);
+                        CoTaskMemFree(uri);
+                    }
+
+                    fileName = SanitizeFileName(fileName);
+                    if (fileName.empty())
+                        fileName = L"download";
+
+                    fs::path candidate = fs::path(DownloadsPath()) / fileName;
+                    int suffix = 1;
+                    while (fs::exists(candidate))
+                    {
+                        candidate = fs::path(DownloadsPath()) /
+                            (candidate.stem().wstring() + L" (" +
+                             std::to_wstring(suffix++) +
+                             candidate.extension().wstring() + L")");
+                    }
+
+                    args->put_ResultFilePath(candidate.wstring().c_str());
+                    args->put_Handled(TRUE);
+                    return S_OK;
+                }).Get(), nullptr);
+    }
 
     tab->webview->add_PermissionRequested(
         Callback<ICoreWebView2PermissionRequestedEventHandler>(
@@ -1171,6 +1346,23 @@ static void CreateToolbar()
         nullptr
     );
 
+    g_downloadButton = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"↓",
+        WS_CHILD |
+        WS_VISIBLE |
+        BS_PUSHBUTTON,
+        801,
+        8,
+        42,
+        34,
+        g_toolbar,
+        reinterpret_cast<HMENU>(9),
+        g_instance,
+        nullptr
+    );
+
     g_newTabButton = CreateWindowExW(
         0,
         L"BUTTON",
@@ -1324,59 +1516,23 @@ static void UpdateLayout()
             SWP_NOZORDER
         );
 
-        int width =
-            rc.right - 175 - 170;
+        const bool narrow = rc.right < 760;
+        const int left = 175;
+        const int reserved = narrow ? 141 : 216;
+        int width = rc.right - left - reserved;
+        if (width < 120)
+            width = 120;
 
-        if (width < 150)
-            width = 150;
-
-        SetWindowPos(
-            g_addressBar,
-            nullptr,
-            175,
-            8,
-            width,
-            34,
-            SWP_NOZORDER
-        );
-
-        int x =
-            175 + width + 5;
-
-        SetWindowPos(
-            g_bookmarkButton,
-            nullptr,
-            x,
-            8,
-            42,
-            34,
-            SWP_NOZORDER
-        );
-
+        SetWindowPos(g_addressBar, nullptr, left, 8, width, 34, SWP_NOZORDER);
+        int x = left + width + 5;
+        SetWindowPos(g_bookmarkButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);
         x += 47;
-
-        SetWindowPos(
-            g_historyButton,
-            nullptr,
-            x,
-            8,
-            70,
-            34,
-            SWP_NOZORDER
-        );
-
-        x += 75;
-
-        SetWindowPos(
-            g_newTabButton,
-            nullptr,
-            x,
-            8,
-            42,
-            34,
-            SWP_NOZORDER
-        );
-    }
+        SetWindowPos(g_historyButton, nullptr, x, 8, narrow ? 42 : 70, 34, SWP_NOZORDER);
+        SetWindowTextW(g_historyButton, narrow ? L"H" : L"History");
+        x += narrow ? 47 : 75;
+        SetWindowPos(g_downloadButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);
+        x += 47;
+        SetWindowPos(g_newTabButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);    }
 
     if (g_bookmarksPanel)
     {
@@ -1451,9 +1607,17 @@ static void InitializeWebView2()
                     g_environment =
                         environment;
 
-                    OpenNewTab(
-                        g_homePage
-                    );
+                    auto session = LoadSession();
+
+                    if (session.empty())
+                    {
+                        OpenNewTab(g_homePage);
+                    }
+                    else
+                    {
+                        for (const auto& url : session)
+                            OpenNewTab(url);
+                    }
 
                     return S_OK;
                 }
@@ -1506,6 +1670,14 @@ static void ExecuteCommand(
 
     case 8:
         OpenNewTab();
+        break;
+
+    case 9:
+        OpenDownloadsFolder();
+        break;
+
+    case 10:
+        PrintActiveTabToPdf();
         break;
 
     default:
@@ -1569,7 +1741,7 @@ static LRESULT CALLBACK WindowProc(
 
         if (
             id >= 1 &&
-            id <= 8 &&
+            id <= 9 &&
             notification == BN_CLICKED
         )
         {
@@ -1667,12 +1839,37 @@ static LRESULT CALLBACK WindowProc(
                 OpenNewTab();
                 return 0;
 
+            case 'P':
+                PrintActiveTabToPdf();
+                return 0;
+
+            case '0':
+                SetZoom(1.0);
+                return 0;
+
+            case VK_OEM_PLUS:
+            case VK_ADD:
+                ZoomBy(0.10);
+                return 0;
+
+            case VK_OEM_MINUS:
+            case VK_SUBTRACT:
+                ZoomBy(-0.10);
+                return 0;
+
             case 'F':
+                FindOnPage();
                 return 0;
 
             default:
                 break;
             }
+        }
+
+        if (wParam == VK_F12)
+        {
+            OpenDevTools();
+            return 0;
         }
 
         if (wParam == VK_F5)
@@ -1772,6 +1969,7 @@ static LRESULT CALLBACK WindowProc(
 
     case WM_DESTROY:
     {
+        SaveSession();
         g_tabs.clear();
 
         PostQuitMessage(0);
