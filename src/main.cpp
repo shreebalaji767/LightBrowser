@@ -79,6 +79,42 @@ static std::wstring BookmarkFile()
     return AppDataPath() + L"\\bookmarks.txt";
 }
 
+static std::wstring SessionFile()
+{
+    return AppDataPath() + L"\\session.txt";
+}
+
+static void SaveSession()
+{
+    std::wofstream out(SessionFile(), std::ios::trunc);
+    if (!out)
+        return;
+
+    for (const auto& tab : g_tabs)
+    {
+        if (tab && !tab->url.empty())
+            out << tab->url << L"\n";
+    }
+}
+
+static std::vector<std::wstring> LoadSession()
+{
+    std::vector<std::wstring> urls;
+    std::wifstream in(SessionFile());
+    if (!in)
+        return urls;
+
+    std::wstring line;
+    while (std::getline(in, line))
+    {
+        if (!line.empty())
+            urls.push_back(line);
+        if (urls.size() >= 12)
+            break;
+    }
+    return urls;
+}
+
 static std::wstring DownloadsPath()
 {
     wchar_t buffer[MAX_PATH]{};
@@ -444,6 +480,61 @@ static void OpenDevTools()
     Tab* tab = ActiveTab();
     if (tab && tab->webview)
         tab->webview->OpenDevToolsWindow();
+}
+
+static void PrintActiveTabToPdf()
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->webview)
+        return;
+
+    ComPtr<ICoreWebView2_7> webview7;
+    if (FAILED(tab->webview.As(&webview7)) || !webview7)
+    {
+        MessageBoxW(
+            g_mainWindow,
+            L"PDF printing is not supported by the installed WebView2 runtime.",
+            APP_NAME,
+            MB_ICONINFORMATION);
+        return;
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+
+    std::wstring name =
+        L"LightBrowser_" +
+        std::to_wstring(now.wYear) + L"-" +
+        std::to_wstring(now.wMonth) + L"-" +
+        std::to_wstring(now.wDay) + L"_" +
+        std::to_wstring(now.wHour) + L"-" +
+        std::to_wstring(now.wMinute) + L"-" +
+        std::to_wstring(now.wSecond) + L".pdf";
+
+    fs::path output = fs::path(DownloadsPath()) / name;
+
+    webview7->PrintToPdf(
+        output.wstring().c_str(),
+        nullptr,
+        Callback<ICoreWebView2PrintToPdfCompletedHandler>(
+            [output](HRESULT errorCode, BOOL isSuccessful)
+            {
+                if (SUCCEEDED(errorCode) && isSuccessful)
+                {
+                    ShellExecuteW(
+                        nullptr, L"open", output.wstring().c_str(),
+                        nullptr, nullptr, SW_SHOWNORMAL);
+                }
+                else
+                {
+                    MessageBoxW(
+                        g_mainWindow,
+                        L"Could not create the PDF.",
+                        APP_NAME,
+                        MB_ICONERROR);
+                }
+                return S_OK;
+            }).Get());
 }
 
 static void OpenDownloadsFolder()
@@ -1516,9 +1607,17 @@ static void InitializeWebView2()
                     g_environment =
                         environment;
 
-                    OpenNewTab(
-                        g_homePage
-                    );
+                    auto session = LoadSession();
+
+                    if (session.empty())
+                    {
+                        OpenNewTab(g_homePage);
+                    }
+                    else
+                    {
+                        for (const auto& url : session)
+                            OpenNewTab(url);
+                    }
 
                     return S_OK;
                 }
@@ -1575,6 +1674,10 @@ static void ExecuteCommand(
 
     case 9:
         OpenDownloadsFolder();
+        break;
+
+    case 10:
+        PrintActiveTabToPdf();
         break;
 
     default:
@@ -1736,6 +1839,10 @@ static LRESULT CALLBACK WindowProc(
                 OpenNewTab();
                 return 0;
 
+            case 'P':
+                PrintActiveTabToPdf();
+                return 0;
+
             case '0':
                 SetZoom(1.0);
                 return 0;
@@ -1862,6 +1969,7 @@ static LRESULT CALLBACK WindowProc(
 
     case WM_DESTROY:
     {
+        SaveSession();
         g_tabs.clear();
 
         PostQuitMessage(0);
