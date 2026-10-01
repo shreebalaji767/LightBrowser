@@ -441,6 +441,18 @@ static void FindOnPage()
         nullptr);
 }
 
+static void FindOnPage()
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->webview)
+        return;
+
+    tab->webview->ExecuteScript(
+        L"document.dispatchEvent(new KeyboardEvent('keydown',{key:'f',ctrlKey:true}));",
+        nullptr,
+        nullptr);
+}
+
 static void OpenDevTools()
 {
     Tab* tab = ActiveTab();
