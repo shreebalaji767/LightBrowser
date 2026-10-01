@@ -413,7 +413,7 @@ static void SetZoom(double factor)
     Tab* tab = ActiveTab();
     if (!tab || !tab->controller)
         return;
-    factor = max(0.25, min(5.0, factor));
+    factor = std::max(0.25, std::min(5.0, factor));
     tab->controller->put_ZoomFactor(factor);
 }
 
@@ -633,8 +633,8 @@ static void UpdateTabButtons()
 
     const int count = static_cast<int>(g_tabs.size());
     const int gap = 4;
-    const int available = max(1, rect.right - 8 - gap * (count - 1));
-    const int width = max(92, min(190, available / count));
+    const int available = std::max(1, rect.right - 8 - gap * (count - 1));
+    const int width = std::max(92, std::min(190, available / count));
     int x = 4;
 
     for (size_t i = 0; i < g_tabs.size(); ++i)
@@ -643,7 +643,7 @@ static void UpdateTabButtons()
         if (!button)
             continue;
 
-        SetWindowPos(button, nullptr, x, 4, width, max(24, rect.bottom - 8), SWP_NOZORDER);
+        SetWindowPos(button, nullptr, x, 4, width, std::max(24, rect.bottom - 8), SWP_NOZORDER);
 
         std::wstring caption = g_tabs[i]->title;
         if (caption.empty())
