@@ -427,6 +427,20 @@ static void ZoomBy(double delta)
         SetZoom(zoom + delta);
 }
 
+static void FindOnPage()
+{
+    Tab* tab = ActiveTab();
+    if (!tab || !tab->webview)
+        return;
+
+    // WebView2's built-in find UI is not exposed directly in older SDKs.
+    // Use the page's native find dialog when available.
+    tab->webview->ExecuteScript(
+        L"document.dispatchEvent(new KeyboardEvent('keydown',{key:'f',ctrlKey:true}));",
+        nullptr,
+        nullptr);
+}
+
 static void OpenDevTools()
 {
     Tab* tab = ActiveTab();
@@ -1737,7 +1751,7 @@ static LRESULT CALLBACK WindowProc(
                 return 0;
 
             case 'F':
-                OpenDevTools();
+                FindOnPage();
                 return 0;
 
             default:
