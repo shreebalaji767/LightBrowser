@@ -158,7 +158,7 @@ static std::wstring UrlEncode(const std::wstring& input)
             output += L'+';
         else
         {
-            output += L'%',
+            output += L'%';
             output += hex[(c >> 4) & 0x0F];
             output += hex[c & 0x0F];
         }
@@ -861,6 +861,56 @@ static void ConfigureWebView(
         nullptr
     );
 
+    ComPtr<ICoreWebView2Settings> settings;
+    if (SUCCEEDED(tab->webview->get_Settings(&settings)) && settings)
+    {
+        settings->put_AreDevToolsEnabled(TRUE);
+        settings->put_AreDefaultContextMenusEnabled(TRUE);
+        settings->put_AreDefaultScriptDialogsEnabled(TRUE);
+        settings->put_IsStatusBarEnabled(FALSE);
+        settings->put_IsZoomControlEnabled(TRUE);
+    }
+
+    ComPtr<ICoreWebView2_4> webview4;
+    if (SUCCEEDED(tab->webview.As(&webview4)) && webview4)
+    {
+        webview4->add_DownloadStarting(
+            Callback<ICoreWebView2DownloadStartingEventHandler>(
+                [](ICoreWebView2*, ICoreWebView2DownloadStartingEventArgs* args)
+                {
+                    if (!args)
+                        return S_OK;
+
+                    LPWSTR uri = nullptr;
+                    std::wstring fileName = L"download";
+                    ComPtr<ICoreWebView2DownloadOperation> operation;
+                    if (SUCCEEDED(args->get_DownloadOperation(&operation)) && operation &&
+                        SUCCEEDED(operation->get_Uri(&uri)) && uri)
+                    {
+                        fileName = GetFileNameFromUrl(uri);
+                        CoTaskMemFree(uri);
+                    }
+
+                    fileName = SanitizeFileName(fileName);
+                    if (fileName.empty())
+                        fileName = L"download";
+
+                    fs::path candidate = fs::path(DownloadsPath()) / fileName;
+                    int suffix = 1;
+                    while (fs::exists(candidate))
+                    {
+                        candidate = fs::path(DownloadsPath()) /
+                            (candidate.stem().wstring() + L" (" +
+                             std::to_wstring(suffix++) +
+                             candidate.extension().wstring() + L")");
+                    }
+
+                    args->put_ResultFilePath(candidate.wstring().c_str());
+                    args->put_Handled(TRUE);
+                    return S_OK;
+                }).Get(), nullptr);
+    }
+
     tab->webview->add_PermissionRequested(
         Callback<ICoreWebView2PermissionRequestedEventHandler>(
             [](
@@ -1361,59 +1411,23 @@ static void UpdateLayout()
             SWP_NOZORDER
         );
 
-        int width =
-            rc.right - 175 - 170;
+        const bool narrow = rc.right < 760;
+        const int left = 175;
+        const int reserved = narrow ? 141 : 216;
+        int width = rc.right - left - reserved;
+        if (width < 120)
+            width = 120;
 
-        if (width < 150)
-            width = 150;
-
-        SetWindowPos(
-            g_addressBar,
-            nullptr,
-            175,
-            8,
-            width,
-            34,
-            SWP_NOZORDER
-        );
-
-        int x =
-            175 + width + 5;
-
-        SetWindowPos(
-            g_bookmarkButton,
-            nullptr,
-            x,
-            8,
-            42,
-            34,
-            SWP_NOZORDER
-        );
-
+        SetWindowPos(g_addressBar, nullptr, left, 8, width, 34, SWP_NOZORDER);
+        int x = left + width + 5;
+        SetWindowPos(g_bookmarkButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);
         x += 47;
-
-        SetWindowPos(
-            g_historyButton,
-            nullptr,
-            x,
-            8,
-            70,
-            34,
-            SWP_NOZORDER
-        );
-
-        x += 75;
-
-        SetWindowPos(
-            g_newTabButton,
-            nullptr,
-            x,
-            8,
-            42,
-            34,
-            SWP_NOZORDER
-        );
-    }
+        SetWindowPos(g_historyButton, nullptr, x, 8, narrow ? 42 : 70, 34, SWP_NOZORDER);
+        SetWindowTextW(g_historyButton, narrow ? L"H" : L"History");
+        x += narrow ? 47 : 75;
+        SetWindowPos(g_downloadButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);
+        x += 47;
+        SetWindowPos(g_newTabButton, nullptr, x, 8, 42, 34, SWP_NOZORDER);    }
 
     if (g_bookmarksPanel)
     {
@@ -1545,6 +1559,10 @@ static void ExecuteCommand(
         OpenNewTab();
         break;
 
+    case 9:
+        OpenDownloadsFolder();
+        break;
+
     default:
         break;
     }
@@ -1606,7 +1624,7 @@ static LRESULT CALLBACK WindowProc(
 
         if (
             id >= 1 &&
-            id <= 8 &&
+            id <= 9 &&
             notification == BN_CLICKED
         )
         {
@@ -1704,12 +1722,33 @@ static LRESULT CALLBACK WindowProc(
                 OpenNewTab();
                 return 0;
 
+            case '0':
+                SetZoom(1.0);
+                return 0;
+
+            case VK_OEM_PLUS:
+            case VK_ADD:
+                ZoomBy(0.10);
+                return 0;
+
+            case VK_OEM_MINUS:
+            case VK_SUBTRACT:
+                ZoomBy(-0.10);
+                return 0;
+
             case 'F':
+                OpenDevTools();
                 return 0;
 
             default:
                 break;
             }
+        }
+
+        if (wParam == VK_F12)
+        {
+            OpenDevTools();
+            return 0;
         }
 
         if (wParam == VK_F5)
