@@ -1,5 +1,20 @@
 # LightBrowser
 
+> Lightweight native Windows browser powered by Microsoft Edge WebView2.
+
+## What's new in v2
+
+- Responsive toolbar that adapts to compact window widths
+- Responsive tab sizing with safe tab-index rebuilding after closing tabs
+- UTF-8 search encoding for Hindi and other non-Latin text
+- Automatic downloads to the Windows Downloads folder with collision-safe filenames
+- One-click Downloads folder button
+- Zoom controls: `Ctrl + +`, `Ctrl + -`, `Ctrl + 0`
+- DevTools: `F12`
+- Page find: `Ctrl + F`
+- WebView2 context menus, script dialogs, DevTools and zoom explicitly configured
+
+
 LightBrowser is an independent native Windows browser built with:
 
 - C++
@@ -24,6 +39,9 @@ LightBrowser is an independent native Windows browser built with:
 - New-window handling
 - Web permissions
 - Browser zoom
+- Responsive desktop layout
+- Automatic download handling
+- Developer tools and page find
 - Full-screen mode
 - Keyboard shortcuts
 - Persistent WebView2 profile
@@ -44,6 +62,9 @@ LightBrowser is an independent native Windows browser built with:
 - F5 — Reload
 - Esc — Stop loading
 - F11 — Fullscreen
+- F12 — DevTools
+- Ctrl + F — Find in page
+- Ctrl + + / Ctrl + - / Ctrl + 0 — Zoom
 
 ## Requirements
 
