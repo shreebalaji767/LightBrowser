@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(LightBrowser VERSION 1.0.0 LANGUAGES CXX)
+project(LightBrowser VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
