@@ -2,6 +2,15 @@
 
 > Lightweight native Windows browser powered by Microsoft Edge WebView2.
 
+## What's new in v3
+
+- Session restore: reopen tabs from the previous run
+- Automatic session persistence on exit
+- Print the active page to PDF with `Ctrl + P`
+- PDFs are saved to Downloads and opened automatically
+- Up to 12 tabs restored safely
+- Fullscreen frame refresh for cleaner F11 transitions
+
 ## What's new in v2
 
 - Responsive toolbar that adapts to compact window widths
@@ -65,6 +74,7 @@ LightBrowser is an independent native Windows browser built with:
 - F12 — DevTools
 - Ctrl + F — Find in page
 - Ctrl + + / Ctrl + - / Ctrl + 0 — Zoom
+- Ctrl + P — Print active page to PDF
 
 ## Requirements
 
