@@ -583,62 +583,58 @@ static void CloseTab(int index)
     if (g_activeTab < 0)
         g_activeTab = 0;
 
+    RebuildTabButtons();
     ActivateTab(g_activeTab);
 }
 
 static void UpdateTabButtons()
 {
-    if (!g_tabsBar)
+    if (!g_tabsBar || g_tabs.empty())
         return;
 
     RECT rect{};
+    GetClientRect(g_tabsBar, &rect);
 
-    GetClientRect(
-        g_tabsBar,
-        &rect
-    );
-
+    const int count = static_cast<int>(g_tabs.size());
+    const int gap = 4;
+    const int available = max(1, rect.right - 8 - gap * (count - 1));
+    const int width = max(92, min(190, available / count));
     int x = 4;
 
     for (size_t i = 0; i < g_tabs.size(); ++i)
     {
-        HWND button =
-            g_tabs[i]->button;
-
+        HWND button = g_tabs[i]->button;
         if (!button)
             continue;
 
-        int width = 180;
+        SetWindowPos(button, nullptr, x, 4, width, max(24, rect.bottom - 8), SWP_NOZORDER);
 
-        if (x + width > rect.right)
-            width = rect.right - x;
-
-        if (width < 80)
-            width = 80;
-
-        SetWindowPos(
-            button,
-            nullptr,
-            x,
-            4,
-            width,
-            rect.bottom - 8,
-            SWP_NOZORDER
-        );
-
-        std::wstring caption =
-            g_tabs[i]->title;
-
+        std::wstring caption = g_tabs[i]->title;
         if (caption.empty())
             caption = L"New Tab";
-
-        SetWindowTextW(
-            button,
-            caption.c_str()
-        );
-
-        x += width + 4;
+        SetWindowTextW(button, caption.c_str());
+        x += width + gap;
     }
+}
+
+static void RebuildTabButtons()
+{
+    if (!g_tabsBar)
+        return;
+
+    for (auto& tab : g_tabs)
+    {
+        if (tab->button)
+        {
+            DestroyWindow(tab->button);
+            tab->button = nullptr;
+        }
+    }
+
+    for (size_t i = 0; i < g_tabs.size(); ++i)
+        AddTabButton(static_cast<int>(i));
+
+    UpdateTabButtons();
 }
 
 static void AddTabButton(
