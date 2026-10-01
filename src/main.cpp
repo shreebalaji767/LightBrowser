@@ -583,8 +583,11 @@ static void CloseTab(int index)
     if (g_activeTab < 0)
         g_activeTab = 0;
 
+    RebuildTabButtons();
     ActivateTab(g_activeTab);
 }
+
+static void AddTabButton(int index);
 
 static void UpdateTabButtons()
 {
