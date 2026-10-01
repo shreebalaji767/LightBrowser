@@ -667,6 +667,8 @@ static void UpdateTabButtons()
     }
 }
 
+static void AddTabButton(int index);
+
 static void RebuildTabButtons()
 {
     if (!g_tabsBar)
